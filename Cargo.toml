@@ -1,0 +1,9 @@
+[package]
+name = "washingLineMonitor-S003-webserver"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rocket = "0.5.1"
+rocket_db_pools = { version = "0.2.0", features = ["sqlx_postgres"] }
+sqlx = { version = "0.8", features = ["postgres", "runtime-tokio", "tls-native-tls"] }
