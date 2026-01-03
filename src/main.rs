@@ -1,12 +1,23 @@
 #[macro_use] extern crate rocket;
 
-use rocket_db_pools::{Connection, Database, sqlx::{self, Row, postgres::PgRow}};
+use std::error::Error;
+use rocket_db_pools::{Connection, Database, sqlx::{self, Row}};
+use rocket::{http::Status, serde::{Deserialize, Serialize, json::{Json, Value}}, response::status};
+// use rocket::response::status;
 // use rocket_db_pools::{sqlx, Database};
 
 // Define the database connection pool
 #[derive(Database)]
 #[database("postgres")]
 struct Db(sqlx::PgPool);
+
+#[derive(Deserialize)]
+#[serde(crate = "rocket::serde")]
+struct NewDeviceMessage<'r> {
+    device_id: &'r str,
+    configuration: Value,
+}
+
 
 #[get("/")]
 fn index() -> &'static str {
@@ -16,18 +27,54 @@ fn index() -> &'static str {
 
 // Device management routes
 #[get("/devices")]
-async fn get_devices(mut db: Connection<Db>) -> &'static str {
-    let rows = sqlx::query("SELECT device_id FROM devices").fetch_all(&mut **db).await.unwrap();
-    for row in rows {
-        let device_id: &str = row.get("device_id");
-        println!("Device ID: {}", device_id);
-    }
-    "List of devices"
+async fn get_devices(mut db: Connection<Db>) -> Result<Json<Vec<serde_json::Value>>, Status> {
+    let rows = sqlx::query("SELECT device_id FROM devices").fetch_all(&mut **db).await.map_err(|_| Status::InternalServerError)?;
+    let devices : Vec<serde_json::Value> = rows
+        .iter()
+        .map(|row| {
+            serde_json::json!({
+                "device_id": row.get::<String, _>("device_id"),
+            })
+        })
+        .collect();
+    Ok(Json(devices))
+
 }
 
-#[post("/devices")]
-fn create_device() -> &'static str {
-    "Device created"
+#[post("/devices", format = "json", data = "<message>")]
+async fn create_device(mut db: Connection<Db>, message : Json<NewDeviceMessage<'_>>) -> Result<Status, Status> {
+    println!("Creating device with ID: {}", message.device_id);
+    let result = sqlx::query("INSERT INTO devices (device_id, configuration) VALUES ($1, $2)")
+        .bind(message.device_id)
+        .bind(message.configuration.clone())
+        .execute(&mut **db)
+        .await;
+
+    match result {
+        Ok(_) => {
+            println!("Creating device with ID: {}", message.device_id);
+            Ok(Status::Created)
+        }
+        Err(e) => {
+            use sqlx::Error;
+            match e {
+                Error::Database(db_err) => {
+                    if db_err.message().contains("duplicate key value") {
+                        println!("Device with ID {} already exists", message.device_id);
+                        return Err(Status::Conflict);
+                    }
+            
+                    println!("Failed to create device: {}", db_err.message());
+                    Err(Status::BadRequest)
+                }
+                _ => {
+                    println!("Failed to create device: {}", e);
+                    Err(Status::BadRequest)
+                }
+            }
+        }
+    }
+        
 }
 
 #[get("/devices/<device_id>")]
