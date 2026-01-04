@@ -78,18 +78,61 @@ async fn create_device(mut db: Connection<Db>, message : Json<NewDeviceMessage<'
 }
 
 #[get("/devices/<device_id>")]
-fn get_device(device_id: String) -> String {
-    format!("Device ID: {}", device_id)
+async fn get_device(mut db: Connection<Db>, device_id: String) -> Result<Json<serde_json::Value>, Status> {
+    let row = sqlx::query("SELECT device_id, configuration FROM devices WHERE device_id = $1").bind(&device_id).fetch_optional(&mut **db).await.map_err(|_| Status::InternalServerError)?;
+    match row {
+        Some(row) => {
+            let device = serde_json::json!({
+                "device_id": row.get::<String, _>("device_id"),
+                "configuration": row.get::<serde_json::Value, _>("configuration"),
+            });
+            Ok(Json(device))
+        }
+        None => {
+            println!("Device with ID {} not found", device_id);
+            Err(Status::NotFound)
+        }
+    }
 } 
 
 #[delete("/devices/<device_id>")]
-fn delete_device(device_id: String) -> String {
-    format!("Deleted Device ID: {}", device_id)
+async fn delete_device(mut db: Connection<Db>, device_id: String) -> Result<Status, Status> {
+    let row = sqlx::query("DELETE FROM devices WHERE device_id = $1 RETURNING device_id")
+        .bind(&device_id)
+        .fetch_optional(&mut **db)
+        .await
+        .map_err(|_| Status::InternalServerError)?;
+
+    match row {
+        Some(_) => {
+            Ok(Status::NoContent)
+        }
+        None => {
+            println!("Device with ID {} not found for deletion", device_id);
+            Err(Status::NotFound)
+        }
+    }
 }
 
-#[patch("/devices/<device_id>")]
-fn update_device_configuration(device_id: String) -> String {
-    format!("Updated configuration for Device ID: {}", device_id)
+#[patch("/devices/<device_id>", format = "json", data = "<message>")]
+async fn update_device_configuration(mut db: Connection<Db>, device_id: String, message : Json<NewDeviceMessage<'_>>) -> Result<Status, Status> {
+    let row = sqlx::query("UPDATE devices SET configuration = $1 WHERE device_id = $2 RETURNING device_id")
+        .bind(&message.configuration)
+        .bind(&device_id)
+        .fetch_optional(&mut **db)
+        .await
+        .map_err(|_| Status::InternalServerError)?;
+
+    match row {
+        Some(_) => {
+            Ok(Status::Ok)
+        }
+        None => {
+            println!("Device with ID {} not found for update", device_id);
+            Err(Status::NotFound)
+        }
+    }
+
 }
 
 // Telemetry data routes
