@@ -1,8 +1,8 @@
 #[macro_use] extern crate rocket;
 
+use rocket_db_pools::{Connection, Database, sqlx::{self, Row, FromRow, types::chrono}};
+use rocket::{http::Status, serde::{Deserialize, Serialize, json::{Json, Value}}};
 use std::error::Error;
-use rocket_db_pools::{Connection, Database, sqlx::{self, Row}};
-use rocket::{http::Status, serde::{Deserialize, Serialize, json::{Json, Value}}, response::status};
 // use rocket::response::status;
 // use rocket_db_pools::{sqlx, Database};
 
@@ -18,6 +18,33 @@ struct NewDeviceMessage<'r> {
     configuration: Value,
 }
 
+#[derive(Deserialize)]
+#[serde(crate = "rocket::serde")]
+struct NewTelemetryMessage<'r> {
+    device_id: &'r str,
+    payload: Value,
+}
+
+
+#[derive(Serialize)]
+#[serde(crate = "rocket::serde")]
+struct TelemetryRecord {
+    device_id: String,
+    payload: serde_json::Value,
+    timestamp: chrono::DateTime<chrono::Utc>,
+}
+
+impl<'r> FromRow<'r, sqlx::postgres::PgRow> for TelemetryRecord {
+    fn from_row(row: &'r sqlx::postgres::PgRow) -> Result<Self, sqlx::Error> {
+        Ok(TelemetryRecord {
+            // Use try_get to extract each column by name
+            // The ? operator propagates errors if a column is missing or has wrong type
+            device_id: row.try_get("device_id")?,
+            payload: row.try_get("payload")?,
+            timestamp: row.try_get("timestamp")?,
+        })
+    }
+}
 
 #[get("/")]
 fn index() -> &'static str {
@@ -136,14 +163,74 @@ async fn update_device_configuration(mut db: Connection<Db>, device_id: String, 
 }
 
 // Telemetry data routes
-#[post("/telemetry")]
-fn post_telemetry() -> &'static str {
-    "Telemetry data received"
+#[post("/telemetry", format = "json", data = "<message>")]
+async fn post_telemetry(mut db: Connection<Db>, message : Json<NewTelemetryMessage<'_>>) -> Result<Status, Status> {
+    let _result = sqlx::query("INSERT INTO telemetry (device_id, payload) VALUES ($1, $2)")
+        .bind(message.device_id)
+        .bind(message.payload.clone())
+        .execute(&mut **db)
+        .await
+        .map_err(|_| Status::InternalServerError)?;
+
+    // start async processing of telemetry data here (e.g., spawn a task)
+
+
+    Ok(Status::Created)
 }
 
-#[get("/telemetry/<device_id>")]
-fn get_telemetry(device_id: String) -> String {
-    format!("Telemetry data for Device ID: {}", device_id)
+
+fn parse_timestamp(s: &str) -> Result<chrono::NaiveDateTime, Box<dyn Error>> {
+    // Try multiple formats that clients might send
+    // The ? operator propagates errors - if parsing fails, return Err immediately
+    chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S")
+        .or_else(|_| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S"))
+        .map_err(|e| Box::new(e) as Box<dyn Error>)
+}
+
+#[get("/telemetry/<device_id>?<start_time>&<end_time>")]
+async fn get_telemetry(mut db: Connection<Db>,
+    device_id: &str,
+    start_time: Option<String>,
+    end_time: Option<String>,) -> Result<Json<Vec<TelemetryRecord>>, Status> {
+    
+    let default_start = || chrono::NaiveDate::from_ymd_opt(1970, 1, 1)
+        .unwrap()
+        .and_hms_opt(0, 0, 0)
+        .unwrap();
+
+    let default_end = || chrono::NaiveDate::from_ymd_opt(2100, 1, 1)
+        .unwrap()
+        .and_hms_opt(0, 0, 0)
+        .unwrap();
+
+    let start = start_time
+        .as_ref()
+        .and_then(|s|  parse_timestamp(s).ok())
+        .unwrap_or_else(default_start);
+
+    let end = end_time
+        .as_ref()
+        .and_then(|s| parse_timestamp(s).ok())
+        .unwrap_or_else(default_end); 
+
+    let result = sqlx::query_as::<_, TelemetryRecord>(
+        "SELECT device_id, payload, timestamp FROM telemetry
+        WHERE device_id = $1
+        AND timestamp >= $2
+        AND timestamp <= $3
+        ORDER BY timestamp DESC"
+    )
+    .bind(device_id)
+    .bind(start)
+    .bind(end)
+    .fetch_all(&mut **db)
+    .await
+    .map_err(|e| {
+        eprintln!("Database error in get_telemetry for device '{}': {:?}", device_id, e);
+        Status::InternalServerError
+    })?;   
+    Ok(Json(result))    
+
 }
 
 
