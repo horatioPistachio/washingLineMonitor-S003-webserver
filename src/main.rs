@@ -1,8 +1,9 @@
 #[macro_use] extern crate rocket;
 
 use rocket_db_pools::{Connection, Database, sqlx::{self, Row, FromRow, types::chrono}};
-use rocket::{http::Status, serde::{Deserialize, Serialize, json::{Json, Value}}};
+use rocket::{http::Status, tokio,  serde::{Deserialize, Serialize, json::{Json, Value}}};
 use std::error::Error;
+use std::time::Duration;
 // use rocket::response::status;
 // use rocket_db_pools::{sqlx, Database};
 
@@ -45,6 +46,62 @@ impl<'r> FromRow<'r, sqlx::postgres::PgRow> for TelemetryRecord {
         })
     }
 }
+
+pub async fn process_telemetry(
+   pool: sqlx::PgPool,
+    device_id: String,
+    payload: Value,
+) {
+    println!("Processing telemetry for device {}", device_id);
+
+    let  historical_telemetry_data = sqlx::query_as::<_, TelemetryRecord>(
+        "SELECT device_id, payload, timestamp  FROM telemetry WHERE device_id = $1 AND timestamp >= $2 ORDER BY timestamp DESC")
+        .bind(&device_id)
+        .bind(chrono::Utc::now() - Duration::from_hours(1))
+        .fetch_all(&pool)
+        .await
+        .map_err(|e| {
+            eprintln!("Database error in process_telemetry for device '{}': {:?}", device_id, e);
+            e
+        });
+
+    println!("Got data: {}", historical_telemetry_data.as_ref().unwrap().len());
+
+    let data_point_list : Vec<_> = historical_telemetry_data
+        .unwrap()
+        .iter()
+        .filter_map(|record| record.payload["temp"].as_f64())
+        .collect();
+    
+    println!("Extracted data points: {:?}", data_point_list);
+
+    if data_point_list.is_empty() {
+        println!("No temperature data points found for device {} in the last hour", device_id);
+        return;
+    }
+
+    let avg_sum: f64 = data_point_list.iter().sum();
+    let count: f64 = data_point_list.len() as f64;
+    let avg = avg_sum / count;
+
+    println!("Average temperature for device {} over last hour: {}", device_id, avg);
+
+    let latest_temp = payload["temp"].as_f64();
+
+    if let Some(temp) = latest_temp {
+        if temp < avg + 5.0 || temp > avg + 5.0 {
+            println!("Alert: Device {} reported stable temperature: {}", device_id, temp);
+            // Here you could add code to send an alert (e.g., email, SMS, push notification)
+            
+        }
+    }
+
+
+
+}
+
+
+
 
 #[get("/")]
 fn index() -> &'static str {
@@ -164,7 +221,7 @@ async fn update_device_configuration(mut db: Connection<Db>, device_id: String, 
 
 // Telemetry data routes
 #[post("/telemetry", format = "json", data = "<message>")]
-async fn post_telemetry(mut db: Connection<Db>, message : Json<NewTelemetryMessage<'_>>) -> Result<Status, Status> {
+async fn post_telemetry(mut db: Connection<Db>, pool: &rocket::State<sqlx::PgPool>, message : Json<NewTelemetryMessage<'_>>) -> Result<Status, Status> {
     let _result = sqlx::query("INSERT INTO telemetry (device_id, payload) VALUES ($1, $2)")
         .bind(message.device_id)
         .bind(message.payload.clone())
@@ -173,6 +230,14 @@ async fn post_telemetry(mut db: Connection<Db>, message : Json<NewTelemetryMessa
         .map_err(|_| Status::InternalServerError)?;
 
     // start async processing of telemetry data here (e.g., spawn a task)
+
+    let device_id = message.device_id.to_string();  // Convert &str to String for 'static lifetime
+    let payload = message.payload.clone();  // Clone the JSON value
+    let pool_clone = pool.inner().clone();  // Extract the underlying PgPool from the Connection wrapper
+
+    tokio::spawn(async move {
+        process_telemetry(pool_clone, device_id, payload).await;
+    });
 
 
     Ok(Status::Created)
@@ -238,8 +303,20 @@ async fn get_telemetry(mut db: Connection<Db>,
 #[launch]
 fn rocket() -> _ {
     dotenv::dotenv().ok();
+
+    use rocket::fairing::AdHoc;
+    use rocket_db_pools::Database;
+
     rocket::build()
         .attach(Db::init())
+        .attach( AdHoc::on_ignite("Manage DB Pool", |rocket| async {
+           if let Some(db) = Db::fetch(&rocket) {
+               let pool = db.0.clone();
+               rocket.manage(pool)
+              } else {
+                panic!("Failed to get database pool - make sure Db::init() is attached first");
+        }
+        }))
         .mount("/", routes![index])
         .mount("/api/v1", routes![
             get_devices,
