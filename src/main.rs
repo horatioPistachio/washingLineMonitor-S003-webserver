@@ -89,10 +89,25 @@ pub async fn process_telemetry(
     let latest_temp = payload["temp"].as_f64();
 
     if let Some(temp) = latest_temp {
-        if temp < avg + 5.0 || temp > avg + 5.0 {
+        if temp < avg + 5.0 && temp > avg - 5.0 {
             println!("Alert: Device {} reported stable temperature: {}", device_id, temp);
             // Here you could add code to send an alert (e.g., email, SMS, push notification)
-            
+            let ntfy_topic = "d4f13297-4886-45ca-951d-c6ba3278eece";
+            let client = reqwest::Client::new();
+
+            let response = client
+                .post(format!("https://ntfy.sh/{}", ntfy_topic))
+                .header("Title", "Washing Complete :)")
+                .header("Priority", "default")
+                .body(format!("Device {} reported stable temperature: {}", device_id, temp))
+                .send()
+                .await;
+
+            if response.as_ref().unwrap().status().is_success() {
+                println!("Alert sent successfully for device {}", device_id);
+            } else {
+                eprintln!("Failed to send alert for device {}: {:?}", device_id, response);
+            }
         }
     }
 
