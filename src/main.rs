@@ -314,6 +314,7 @@ async fn get_telemetry(mut db: Connection<Db>,
 }
 
 
+
 // Rocket launch
 #[launch]
 fn rocket() -> _ {
@@ -321,6 +322,14 @@ fn rocket() -> _ {
 
     use rocket::fairing::AdHoc;
     use rocket_db_pools::Database;
+
+    // let database_url = env::var("DATABASE_URL")
+    // .expect("DATABASE_URL must be set");
+    dotenv::vars()
+        .for_each(|(key, value)| {
+            println!("Env var: {}={}", key, value);
+        });
+
 
     rocket::build()
         .attach(Db::init())
