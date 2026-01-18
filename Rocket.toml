@@ -1,4 +1,4 @@
 [default.databases.postgres]
-url = "postgres://admin:admin@postgres:5432/washing_line_monitor"
+# url = ${DATABASE_URL}
 max_connections = 10
 connect_timeout = 30

@@ -645,6 +645,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
+name = "guts"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1cecdb49c19c6c6e8df6fca1dbb70b5e3d76da8bc954c56233f760c9be03fcd5"
+
+[[package]]
 name = "h2"
 version = "0.3.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1684,6 +1690,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
 
 [[package]]
+name = "replace_with"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "51743d3e274e2b18df81c4dc6caf8a5b8e15dbe799e0dca05c7617380094e884"
+
+[[package]]
 name = "reqwest"
 version = "0.12.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2112,6 +2124,68 @@ checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
 dependencies = [
  "errno",
  "libc",
+]
+
+[[package]]
+name = "signalo"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1766f23491d27accd96e09036f61dbf6fbfcf579e09a8a89a34b66df7e8fd563"
+dependencies = [
+ "signalo_filters",
+ "signalo_pipes",
+ "signalo_sinks",
+ "signalo_sources",
+ "signalo_traits",
+]
+
+[[package]]
+name = "signalo_filters"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "be9da3f7096a3edc85253c19fa45464c6b909d56e0dcd87e514a033a41279346"
+dependencies = [
+ "num-traits",
+ "signalo_traits",
+]
+
+[[package]]
+name = "signalo_pipes"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3195e3c41eeb350a02035ead90def2b15147e8f338e00d735d08af75330742e2"
+dependencies = [
+ "signalo_traits",
+]
+
+[[package]]
+name = "signalo_sinks"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22bd1432bd2d449d62aacf7f8b4b1b57a0b1e33e71c03ce6d8efdd76db9481e6"
+dependencies = [
+ "num-traits",
+ "signalo_traits",
+]
+
+[[package]]
+name = "signalo_sources"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf2cddb723a1c0a347a5281283180056a9e649f759ca2b74de4b8235f98fcebd"
+dependencies = [
+ "num-traits",
+ "signalo_traits",
+]
+
+[[package]]
+name = "signalo_traits"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b8914c4ca89790128a4f508ce653902e9a4ed386fe00bdb85855a05e6396b01c"
+dependencies = [
+ "guts",
+ "replace_with",
 ]
 
 [[package]]
@@ -2961,6 +3035,7 @@ dependencies = [
  "rocket_db_pools",
  "serde",
  "serde_json",
+ "signalo",
  "sqlx",
 ]
 

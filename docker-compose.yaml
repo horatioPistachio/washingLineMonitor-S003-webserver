@@ -4,15 +4,15 @@ services:
     image: postgres:15-alpine
     environment:
       POSTGRES_DB: washing_line_monitor
-      POSTGRES_USER: admin
-      POSTGRES_PASSWORD: admin #${DB_PASSWORD}  # Use environment variable
+      POSTGRES_USER: ${DB_USER}      # Use environment variable
+      POSTGRES_PASSWORD: ${DB_PASSWORD}  # Use environment variable
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./schema.sql:/docker-entrypoint-initdb.d/schema.sql
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U admin -d washing_line_monitor"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d washing_line_monitor"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -23,9 +23,10 @@ services:
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: postgres://admin:admin@postgres:5432/washing_line_monitor
+      ROCKET_DATABASES: '{postgres={url="${DATABASE_URL}"}}'
       ROCKET_ADDRESS: 0.0.0.0
       RUST_BACKTRACE: full
+      NTFY_TOPIC: ${NTFY_TOPIC}
     depends_on:
       postgres:
         condition: service_healthy

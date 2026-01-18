@@ -30,10 +30,11 @@ RUN apt-get update && apt-get install -y \
     libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /app/target/release/washingLineMonitor-S003-webserver /usr/local/bin/app
-COPY Rocket.toml /app/Rocket.toml
-
 WORKDIR /app
+
+COPY --from=builder /app/target/release/washingLineMonitor-S003-webserver ./app
+COPY Rocket.toml ./Rocket.toml
+
 EXPOSE 8000
 
-CMD ["app"]
+CMD ["./app"]
