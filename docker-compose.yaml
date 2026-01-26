@@ -16,6 +16,21 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+  glances:
+    image: nicolargo/glances:latest
+    container_name: glances
+    restart: always
+    ports:
+      - "61208:61208"
+    environment:
+      # This allows Glances to run its web server mode automatically
+      - "GLANCES_OPT=-w" 
+    volumes:
+      # Essential: Allows Glances to see host system stats
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Optional: Allows Glances to see host disk usage/paths
+      - /:/host:ro
+    pid: host # Essential: Allows Glances to see processes running in other containers
 
   # Your Rust application
   app:
