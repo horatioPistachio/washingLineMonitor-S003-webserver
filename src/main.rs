@@ -80,14 +80,14 @@ pub async fn process_telemetry(pool: sqlx::PgPool, device_id: String, _payload: 
     let data_point_list: Vec<_> = historical_telemetry_data
         .unwrap()
         .iter()
-        .filter_map(|record| record.payload["temp"].as_f64())
+        .filter_map(|record| record.payload["resistance"].as_f64())
         .collect();
 
     println!("Extracted data points: {:?}", data_point_list);
 
     if data_point_list.is_empty() {
         println!(
-            "No temperature data points found for device {} in the last hour",
+            "No resistance data points found for device {} in the last hour",
             device_id
         );
         return;
