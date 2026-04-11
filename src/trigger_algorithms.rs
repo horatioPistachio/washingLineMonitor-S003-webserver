@@ -27,6 +27,7 @@ pub fn is_stable_resistance(resistances: &[f64], stability_threshold: f64) -> bo
 
     let derivative = (last_value - first_value) / (smoothed_values.len() as f64);
     let normalized_derivative = derivative / first_value;
+    println!("stability_threshold: {}, normalized_derivative: {}", stability_threshold, normalized_derivative);
     return normalized_derivative.abs() < stability_threshold;
 }
 
@@ -54,5 +55,10 @@ mod tests {
     #[test]
     fn test_insufficient_samples() {
         assert!(!is_stable_resistance(&[100.0, 101.0], 0.01));
+    }
+
+    #[test]
+    fn test_real_world_data_1(){
+        assert!(is_stable_resistance(&[1973763.12, 1973763.12, 1973763.12, 1973763.12, 1973763.12, 1973763.12, 1973763.12, 1973763.12, 1973763.12, 1973763.12, 1973763.12, 1973763.12, 1973763.12, 1973763.12, 1973763.12, 1973763.12, 1973763.12, 1973763.12, 1973763.12, 1973763.12, 1973763.12, 1973763.12, 1973763.12, 1973763.12, 1973763.12, 1973763.12, 1973763.12, 1973763.12, 1973763.12, 1973763.12], 0.01));
     }
 }

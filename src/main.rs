@@ -64,7 +64,7 @@ pub async fn process_telemetry(pool: sqlx::PgPool, device_id: String, _payload: 
     let  historical_telemetry_data = sqlx::query_as::<_, TelemetryRecord>(
         "SELECT device_id, payload, timestamp  FROM telemetry WHERE device_id = $1 AND timestamp >= $2 ORDER BY timestamp DESC")
         .bind(&device_id)
-        .bind(chrono::Utc::now() - Duration::from_hours(1))
+        .bind(chrono::Utc::now() - Duration::from_mins(30))
         .fetch_all(&pool)
         .await
         .map_err(|e| {
@@ -85,15 +85,15 @@ pub async fn process_telemetry(pool: sqlx::PgPool, device_id: String, _payload: 
 
     println!("Extracted data points: {:?}", data_point_list);
 
-    if data_point_list.is_empty() {
+    if data_point_list.is_empty() || data_point_list.len() < 5 {
         println!(
-            "No resistance data points found for device {} in the last hour",
+            "Insufficient data points for device {} ",
             device_id
         );
         return;
     }
 
-    if trigger_algorithms::is_stable_resistance(&data_point_list, 0.01) {
+    if trigger_algorithms::is_stable_resistance(&data_point_list, 1.0) {
         println!("Alert: Device {} reported stable resitance", device_id);
         // Here you could add code to send an alert (e.g., email, SMS, push notification)
         let ntfy_topic = std::env::var("NTFY_TOPIC").expect("NTFY_TOPCI must be set");
@@ -129,7 +129,7 @@ async fn get_devices(mut db: Connection<Db>) -> Result<Json<Vec<serde_json::Valu
     let rows = sqlx::query("SELECT device_id FROM devices")
         .fetch_all(&mut **db)
         .await
-        .map_err(|_| Status::InternalServerError)?;
+        .map_err(|e| { eprintln!("[get_devices] DB error: {e}"); Status::InternalServerError })?;
     let devices: Vec<serde_json::Value> = rows
         .iter()
         .map(|row| {
@@ -188,7 +188,7 @@ async fn get_device(
         .bind(&device_id)
         .fetch_optional(&mut **db)
         .await
-        .map_err(|_| Status::InternalServerError)?;
+        .map_err(|e| { eprintln!("[get_device] DB error: {e}"); Status::InternalServerError })?;
     match row {
         Some(row) => {
             let device = serde_json::json!({
@@ -210,7 +210,7 @@ async fn delete_device(mut db: Connection<Db>, device_id: String) -> Result<Stat
         .bind(&device_id)
         .fetch_optional(&mut **db)
         .await
-        .map_err(|_| Status::InternalServerError)?;
+        .map_err(|e| { eprintln!("[delete_device] DB error: {e}"); Status::InternalServerError })?;
 
     match row {
         Some(_) => Ok(Status::NoContent),
@@ -234,7 +234,7 @@ async fn update_device_configuration(
     .bind(&device_id)
     .fetch_optional(&mut **db)
     .await
-    .map_err(|_| Status::InternalServerError)?;
+    .map_err(|e| { eprintln!("[update_device_configuration] DB error: {e}"); Status::InternalServerError })?;
 
     match row {
         Some(_) => Ok(Status::Ok),
@@ -257,7 +257,16 @@ async fn post_telemetry(
         .bind(message.payload.clone())
         .execute(&mut **db)
         .await
-        .map_err(|_| Status::InternalServerError)?;
+        .map_err(|e| {
+            if let sqlx::Error::Database(ref db_err) = e {
+                if db_err.constraint() == Some("fk_device") {
+                    eprintln!("[post_telemetry] Unknown device '{}': foreign key violation", message.device_id);
+                    return Status::NotFound;
+                }
+            }
+            eprintln!("[post_telemetry] DB error: {e}");
+            Status::InternalServerError
+        })?;
 
     // start async processing of telemetry data here (e.g., spawn a task)
 
