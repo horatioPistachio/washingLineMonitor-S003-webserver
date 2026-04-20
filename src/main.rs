@@ -18,6 +18,7 @@ use std::time::Duration;
 // use rocket::response::status;
 // use rocket_db_pools::{sqlx, Database};
 mod trigger_algorithms;
+mod prediction_algorithms;
 
 // Define the database connection pool
 #[derive(Database)]
