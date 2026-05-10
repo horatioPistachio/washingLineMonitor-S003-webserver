@@ -12,7 +12,7 @@ use sqlx::PgPool;
 use rocket_db_pools::sqlx::{self, Row};
 use thiserror;
 
-
+#[derive(serde::Deserialize)]
 pub struct TelemetryData {
     pub timestamp: DateTime<Utc>,
     pub resistance: f64,
@@ -31,7 +31,7 @@ struct Wrapper {
 // pub(crate) makes EKFParameters visible within this crate (including the test submodule)
 // but not to external crates. This is needed so the mock in `mod tests` can construct it.
 // Without pub(crate), the struct and its fields would be private to this module only.
-#[derive(serde::Deserialize, Clone)]
+#[derive(serde::Deserialize, serde::Serialize, Clone)]
 pub(crate) struct EKFParameters {
     /// Initial 6-element state vector: [R, M, k, tau, M_c, R_offset]
     pub(crate) initial_state: Vec<f64>,
@@ -69,21 +69,18 @@ impl PostgresDeviceRepository {
 
 impl DeviceRepository for PostgresDeviceRepository {
     async fn get_ekf_parameters(&self, device_id: &str) -> Result<EKFParameters, PredictorError> {
-        let rows = sqlx::query("SELECT configuration FROM devices WHERE device_id = $1")
+        let row = sqlx::query("SELECT configuration FROM devices WHERE device_id = $1")
             .bind(device_id)
-            .fetch_all(&self.pool)
+            .fetch_one(&self.pool)
             .await
             .map_err(|e| {
                 eprintln!("Unable to retrieve device configuration: {e}");
                 PredictorError::Database(e)
             })?;
 
-        if rows.is_empty() {
-            return Err(PredictorError::DeviceNotFound(device_id.to_string()));
-        }
-
-        let wrapper: Wrapper =
-            serde_json::from_str(&rows[0].get::<String, _>("configuration")).map_err(|e| {
+            let configuration_json: serde_json::Value = row.try_get("configuration")?;
+            println!("Raw configuration JSON for device {}: {}", device_id, configuration_json);
+            let wrapper: Wrapper = serde_json::from_value(configuration_json).map_err(|e| {
                 eprintln!("Unable to parse EKF parameters from database: {e}");
                 PredictorError::Database(sqlx::Error::ColumnDecode {
                     index: "configuration".to_string(),
@@ -91,7 +88,22 @@ impl DeviceRepository for PostgresDeviceRepository {
                 })
             })?;
 
-        Ok(wrapper.configuration)
+            let ekf_parameters = wrapper.configuration;
+            
+        // if rows.is_empty() {
+        //     return Err(PredictorError::DeviceNotFound(device_id.to_string()));
+        // }
+
+        // let wrapper: Wrapper =
+        //     serde_json::from_str(&rows[0].get::<String, _>("configuration")).map_err(|e| {
+        //         eprintln!("Unable to parse EKF parameters from database: {e}");
+        //         PredictorError::Database(sqlx::Error::ColumnDecode {
+        //             index: "configuration".to_string(),
+        //            source: Box::new(e),
+        //         })
+        //     })?;
+        println!("Successfully retrieved EKF parameters for device {}: {:?}", device_id, serde_json::to_string_pretty(&ekf_parameters));
+        Ok(ekf_parameters)
     }
 }
 

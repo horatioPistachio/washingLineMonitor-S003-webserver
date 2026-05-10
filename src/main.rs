@@ -14,7 +14,8 @@ use rocket_db_pools::{
     sqlx::{self, FromRow, Row, types::chrono},
 };
 use std::error::Error;
-use std::time::Duration;
+use std::sync::Arc;
+
 // use rocket::response::status;
 // use rocket_db_pools::{sqlx, Database};
 mod trigger_algorithms;
@@ -60,13 +61,63 @@ impl<'r> FromRow<'r, sqlx::postgres::PgRow> for TelemetryRecord {
     }
 }
 
-pub async fn process_telemetry(pool: sqlx::PgPool, device_id: String, _payload: Value) {
+
+
+
+pub async fn process_telemetry(pool: sqlx::PgPool, predictor: Arc<washing_predictor::WashingPredictor<washing_predictor::PostgresDeviceRepository>>, device_id: String, payload: Value) {
+    println!("Processing telemetry for device {}", device_id);
+    let timestamp = &payload["timestamp"];
+    let resistance = &payload["resistance"];
+
+    let telemetry_data = washing_predictor::TelemetryData {
+        timestamp: timestamp.as_str().unwrap().parse::<chrono::DateTime<chrono::Utc>>().unwrap(),
+        resistance: resistance.as_f64().unwrap(),
+    };
+
+    let completion_time = match predictor.predict_drying_time(&device_id, telemetry_data).await {
+        Ok(completion_time) => completion_time,
+        Err(error) => {
+            eprintln!(
+                "Failed to predict drying time for device {}: {}",
+                device_id, error
+            );
+            return;
+        }
+    };
+
+    println!("Predicted drying time for device {}: {:?}", device_id, completion_time);
+    
+    if completion_time.signed_duration_since(chrono::Utc::now()).num_minutes() < 5 {
+        println!("Alert: Device {} is predicted to be dry in less than 5 minutes!", device_id);
+        let ntfy_topic = std::env::var("NTFY_TOPIC").expect("NTFY_TOPCI must be set");
+        let client = reqwest::Client::new();
+    
+        let response = client
+            .post(format!("https://ntfy.sh/{}", ntfy_topic))
+            .header("Title", "Washing Complete :)")
+            .header("Priority", "default")
+            .body(format!("Device {} reported stable resistance", device_id))
+            .send()
+            .await;
+    
+        if response.as_ref().unwrap().status().is_success() {
+            println!("Alert sent successfully for device {}", device_id);
+        } else {
+            eprintln!(
+                "Failed to send alert for device {}: {:?}",
+                device_id, response
+            );
+        }
+    }
+
+}
+
+pub async fn process_telemetry_old(pool: sqlx::PgPool, device_id: String, _payload: Value) {
     println!("Processing telemetry for device {}", device_id);
 
     let  historical_telemetry_data = sqlx::query_as::<_, TelemetryRecord>(
-        "SELECT device_id, payload, timestamp  FROM telemetry WHERE device_id = $1 AND timestamp >= $2 ORDER BY timestamp DESC")
+        "SELECT device_id, payload, timestamp  FROM telemetry WHERE device_id = $1 AND timestamp >= NOW() - INTERVAL '30 minutes' ORDER BY timestamp DESC")
         .bind(&device_id)
-        .bind(chrono::Utc::now() - Duration::from_mins(30))
         .fetch_all(&pool)
         .await
         .map_err(|e| {
@@ -252,6 +303,7 @@ async fn update_device_configuration(
 async fn post_telemetry(
     mut db: Connection<Db>,
     pool: &rocket::State<sqlx::PgPool>,
+    predictor: &rocket::State<Arc<washing_predictor::WashingPredictor<washing_predictor::PostgresDeviceRepository>>>,
     message: Json<NewTelemetryMessage<'_>>,
 ) -> Result<Status, Status> {
     let _result = sqlx::query("INSERT INTO telemetry (device_id, payload) VALUES ($1, $2)")
@@ -275,9 +327,13 @@ async fn post_telemetry(
     let device_id = message.device_id.to_string(); // Convert &str to String for 'static lifetime
     let payload = message.payload.clone(); // Clone the JSON value
     let pool_clone = pool.inner().clone(); // Extract the underlying PgPool from the Connection wrapper
+    let predictor = predictor.inner().clone(); // Extract the WashingPredictor from the State wrapper
+    
+
 
     tokio::spawn(async move {
-        process_telemetry(pool_clone, device_id, payload).await;
+        process_telemetry(pool_clone,predictor, device_id, payload).await;
+        // predictor.predict_drying_time(&device_id, telemetry_data).await;
     });
 
     Ok(Status::Created)
@@ -354,10 +410,15 @@ fn rocket() -> _ {
 
     rocket::build()
         .attach(Db::init())
-        .attach(AdHoc::on_ignite("Manage DB Pool", |rocket| async {
+        .attach(AdHoc::on_ignite("Manage App State", |rocket| async {
             if let Some(db) = Db::fetch(&rocket) {
                 let pool = db.0.clone();
-                rocket.manage(pool)
+                let predictor= Arc::new(washing_predictor::WashingPredictor::new(
+                    washing_predictor::PostgresDeviceRepository::new(pool.clone())));
+                
+                rocket
+                    .manage(pool)
+                    .manage(predictor)
             } else {
                 panic!("Failed to get database pool - make sure Db::init() is attached first");
             }
