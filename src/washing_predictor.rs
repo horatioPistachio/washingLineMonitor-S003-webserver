@@ -19,7 +19,7 @@ pub struct TelemetryData {
 }
 struct EKFEntry {
     ekf: ExtendedKalmanFilter<f64, MoistureSensorModel>,
-    start_time: DateTime<Utc>,
+    _start_time: DateTime<Utc>,
     last_received_time: DateTime<Utc>,
 }
 
@@ -32,7 +32,7 @@ struct Wrapper {
 // but not to external crates. This is needed so the mock in `mod tests` can construct it.
 // Without pub(crate), the struct and its fields would be private to this module only.
 #[derive(serde::Deserialize, serde::Serialize, Clone)]
-pub(crate) struct EKFParameters {
+pub struct EKFParameters {
     /// Initial 6-element state vector: [R, M, k, tau, M_c, R_offset]
     pub(crate) initial_state: Vec<f64>,
     /// Flattened 6×6 initial covariance matrix (36 elements, row-major)
@@ -75,7 +75,7 @@ impl DeviceRepository for PostgresDeviceRepository {
             .await
             .map_err(|e| {
                 eprintln!("Unable to retrieve device configuration: {e}");
-                PredictorError::Database(e)
+                PredictorError::DeviceNotFound(e.to_string())
             })?;
 
             let configuration_json: serde_json::Value = row.try_get("configuration")?;
@@ -90,18 +90,6 @@ impl DeviceRepository for PostgresDeviceRepository {
 
             let ekf_parameters = wrapper.configuration;
             
-        // if rows.is_empty() {
-        //     return Err(PredictorError::DeviceNotFound(device_id.to_string()));
-        // }
-
-        // let wrapper: Wrapper =
-        //     serde_json::from_str(&rows[0].get::<String, _>("configuration")).map_err(|e| {
-        //         eprintln!("Unable to parse EKF parameters from database: {e}");
-        //         PredictorError::Database(sqlx::Error::ColumnDecode {
-        //             index: "configuration".to_string(),
-        //            source: Box::new(e),
-        //         })
-        //     })?;
         println!("Successfully retrieved EKF parameters for device {}: {:?}", device_id, serde_json::to_string_pretty(&ekf_parameters));
         Ok(ekf_parameters)
     }
@@ -158,7 +146,11 @@ impl<R: DeviceRepository> WashingPredictor<R> {
         let mut loop_counter = 0;
         loop {
             let mut entry = match self.predictor_cache.get_mut(device_id) {
-                Some(entry) => entry,
+                Some(mut entry) => { 
+                    // Update the last_received_time for this entry
+                    entry.last_received_time = telemetry_data.timestamp;
+                    entry
+                }
                 None => {
                     let ekf_parameters =
                         self.repo.get_ekf_parameters(device_id).await?;
@@ -188,7 +180,7 @@ impl<R: DeviceRepository> WashingPredictor<R> {
                         device_id.to_string(),
                         EKFEntry {
                             ekf,
-                            start_time: telemetry_data.timestamp,
+                            _start_time: telemetry_data.timestamp,
                             last_received_time: telemetry_data.timestamp,
                         },
                     );
@@ -267,12 +259,42 @@ impl<R: DeviceRepository> WashingPredictor<R> {
 
         Ok(completion_time)
     }
+
+    fn reset_predictor(&self, device_id: &str) -> Result<(), PredictorError> {
+        let output = self.predictor_cache.remove(device_id);
+        if output.is_none() {
+            eprintln!("No EKF entry found for device {} to reset", device_id);
+            return Err(PredictorError::DeviceNotFound(device_id.to_string()));
+        }
+        Ok(())
+    }
+
+    fn reset_old_predictors(&self, max_age: chrono::Duration) -> (){
+        let now = Utc::now();
+        self.predictor_cache.retain(|device_id, entry| {
+            let age = now - entry.last_received_time;
+            if age > max_age {
+                println!("Evicting EKF entry for device {} due to age ({} minutes)", device_id, age.num_minutes());
+                false // Remove this entry from the cache
+            } else {
+                true // Keep this entry in the cache
+            }
+        });
+    }
+
+    fn _get_cache_size(&self) -> usize {
+        self.predictor_cache.len()
+    }
+
+
 }
 
 #[cfg(test)]
 mod tests {
 
-    use super::*;
+    use std::fmt::Debug;
+
+use super::*;
     use chrono::Utc;
 
     // --- Mock ---
@@ -388,4 +410,69 @@ mod tests {
         // prediction should succeed just like the very first call did.
         assert!(res2.is_ok());
     }
-}
+
+    #[tokio::test]
+    async fn test_reset_predictor() {
+        let kf = WashingPredictor::new(MockDeviceRepository);
+
+        let telemetry_data = TelemetryData {
+            timestamp: Utc::now(),
+            resistance: 30000.0,
+        };
+
+        assert_eq!(kf._get_cache_size(), 0); // Cache should start empty
+
+        let res = kf.predict_drying_time("wash-1", telemetry_data).await;
+        println!("Prediction result before reset: {:?}", res);
+
+        assert_eq!(kf._get_cache_size(), 1); // Cache should have one entry after prediction
+
+        assert!(res.is_ok());
+
+        kf.reset_predictor("wash-1").unwrap();
+        assert_eq!(kf._get_cache_size(), 0); // Cache should start empty
+
+        let telemetry_data = TelemetryData {
+            timestamp: Utc::now(),
+            resistance: 40000.0,
+        };
+
+        let res_after_reset = kf.predict_drying_time("wash-1", telemetry_data).await;
+        println!("Prediction result after reset: {:?}", res_after_reset);
+        assert!(res_after_reset.unwrap() > res.unwrap());
+
+    }
+
+    #[tokio::test]
+    async fn test_reset_old_predictors() {
+        let kf = WashingPredictor::new(MockDeviceRepository);
+
+        let telemetry_data = TelemetryData {
+            timestamp: Utc::now() - chrono::Duration::minutes(10),
+            resistance: 30000.0,
+        };
+        assert_eq!(kf._get_cache_size(), 0); // Cache should start empty
+
+
+        let res = kf.predict_drying_time("wash-2", telemetry_data).await;
+        println!("Prediction result before reset: {:?}", res);
+
+        assert!(res.is_ok());
+        assert_eq!(kf._get_cache_size(), 1); // Cache should have one entry after prediction
+
+        kf.reset_old_predictors(chrono::Duration::minutes(5));
+        assert_eq!(kf._get_cache_size(), 0); // Cache should be empty after resetting old predictors
+
+        let telemetry_data = TelemetryData {
+            timestamp: Utc::now(),
+            resistance: 20000.0,
+        };
+        let res_after_reset = kf.predict_drying_time("wash-2", telemetry_data).await;
+        println!("Prediction result after resetting old predictors: {:?}", res_after_reset);
+        assert!(res_after_reset.is_ok());
+        assert!(res_after_reset.unwrap() > res.unwrap());
+
+    }
+
+
+    }

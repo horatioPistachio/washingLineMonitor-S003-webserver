@@ -179,10 +179,11 @@ fn index() -> &'static str {
 // Device management routes
 #[get("/devices")]
 async fn get_devices(mut db: Connection<Db>) -> Result<Json<Vec<serde_json::Value>>, Status> {
-    let rows = sqlx::query("SELECT device_id FROM devices")
+    let rows = sqlx::query("SELECT RTRIM(device_id) AS device_id FROM devices")
         .fetch_all(&mut **db)
         .await
         .map_err(|e| { eprintln!("[get_devices] DB error: {e}"); Status::InternalServerError })?;
+    
     let devices: Vec<serde_json::Value> = rows
         .iter()
         .map(|row| {
@@ -237,7 +238,7 @@ async fn get_device(
     mut db: Connection<Db>,
     device_id: String,
 ) -> Result<Json<serde_json::Value>, Status> {
-    let row = sqlx::query("SELECT device_id, configuration FROM devices WHERE device_id = $1")
+    let row = sqlx::query("SELECT RTRIM(device_id) AS device_id, configuration FROM devices WHERE device_id = $1")
         .bind(&device_id)
         .fetch_optional(&mut **db)
         .await
@@ -251,7 +252,7 @@ async fn get_device(
             Ok(Json(device))
         }
         None => {
-            println!("Device with ID {} not found", device_id);
+            println!("Device with ID \"{}\" not found", device_id);
             Err(Status::NotFound)
         }
     }
@@ -379,7 +380,7 @@ async fn get_telemetry(
         .unwrap_or_else(default_end);
 
     let result = sqlx::query_as::<_, TelemetryRecord>(
-        "SELECT device_id, payload, timestamp FROM telemetry
+        "SELECT RTRIM(device_id) AS device_id, payload, timestamp FROM telemetry
         WHERE device_id = $1
         AND timestamp >= $2
         AND timestamp <= $3
