@@ -1,42 +1,61 @@
 //! This module contains the prediction algorithms used to predict drying times.
 //! 
-//! The nonlinear process model is:
-//!    R(t) = (M_0 * exp(-k*t) - M_C)^(-TAU) + R_0
+//! The  reccursive nonlinear process model is:
+//!    R_{t+1} = (M_t*e^{−k(dt)}−M_c​)^{−\tau} + R_{offset}
 //! 
 //! State vector:
-//!    x = [R, k, tau, M_0, M_C, R_0]^T
+//!    x = [R, M, k, tau, M_c, R_offset]^T
 //! 
 
+
+
+    
 use kalman_filters::NonlinearSystem;
 
 /// State space model for the drying process. 
-/// It follows the model R(t) = (M_0 * exp(-k*t) - M_C)^(-TAU) + R_0
-struct MoistureSensorModel {
-    _r: f64, // Resistance of the sensor
-    _k: f64, // k parameter of the model
-    _tau: f64, // tau parameter of the model
-    _m_0: f64, // Initial moisture content
-    _m_c: f64, // Critical moisture content
-    _r_0: f64, // Resistance offset parameter
+/// It follows the model R_{t+1} = (M_t*e^{−k(dt)}−M_c​)^{−\tau} + R_{offset}
+pub struct MoistureSensorModel {
+    pub _r: f64, // Resistance of the sensor
+    pub _m: f64, // Initial moisture content
+    pub _k: f64, // k parameter of the model
+    pub _tau: f64, // tau parameter of the model
+    pub _m_c: f64, // Critical moisture content
+    pub _r_offset: f64, // Resistance offset parameter
 }
 
 impl NonlinearSystem<f64> for MoistureSensorModel {
 
     fn state_transition(&self, state: &[f64], _control: Option<&[f64]>, dt: f64) -> Vec<f64> {
+        // current state vector (x_t)
         let _r = state[0];
-        let k = state[1];
-        let tau = state[2];
-        let m_0 = state[3];
+        let m = state[1]; // Current moisture M(t); advances each step
+        let k = state[2];
+        let tau = state[3];
         let m_c = state[4];
-        let r_0 = state[5];
+        let r_offset = state[5];
+
+
+        // applying the state transition function to compute the next state (x_{t+1})
+        // x_{t+1} = [
+        //     (M_t * e^{-k(dt)} - M_c)^{-\tau} + R_offset
+        //     M_t * e^{-k(dt)}
+        //     k
+        //     \tau
+        //     M_c
+        //     R_offset
+        // ] + W_t
+
+        // Advance moisture by one time step: M(t+dt) = M(t) * exp(-k*dt)
+        let m_next = (m * (-k * dt).exp()).clamp(1e-9, f64::INFINITY); // M_t * e^{-k(dt)}
+        let base = (m_next - m_c).clamp(1e-9, f64::INFINITY); // M_t * e^{-k(dt)} - M_c
 
         vec![
-            (m_0 * (-k * dt).exp() - m_c).clamp(1e-9, f64::INFINITY).powf(-tau) + r_0, // R(t)
-            k, // constant k however will likely change sligthly due to changes in the drying conditions
-            tau, // tau should remain constant
-            m_0, // M_0 should remain constant
-            m_c, // M_c should remain constant
-            r_0, // R_0 should remain constant
+            base.powf(-tau) + r_offset, // R(t+dt) computed from the advanced moisture M(t+dt)
+            m_next, // M(t+dt): moisture content advances each step
+            k,      // k is modelled as approximately constant
+            tau,    // tau is constant
+            m_c,    // M_c is constant
+            r_offset,    // R_0 is constant
         ]
     }
 
@@ -47,51 +66,59 @@ impl NonlinearSystem<f64> for MoistureSensorModel {
     #[allow(non_snake_case)]
     fn state_jacobian(&self, state: &[f64], _control: Option<&[f64]>, dt: f64) -> Vec<f64> {
         let _r = state[0];
-        let k = state[1];
-        let tau = state[2];
-        let m_0 = state[3];
+        let m = state[1]; // Current moisture M(t)
+        let k = state[2];
+        let tau = state[3];
         let m_c = state[4];
-        let _r_0 = state[5];
+        let _r_offset = state[5];
 
-        // consider clamping to epsilon rather than 1e-9
-        let base = (m_0 * (-k * dt).exp() - m_c).clamp(1e-9, f64::INFINITY); // Avoid negative or zero base for the power function
+        // Compute M(t+dt) and the base term, matching state_transition exactly
+        let m_next = m * (-k * dt).exp(); // M(t+dt) = M(t) * exp(-k*dt)
+        let base = (m_next - m_c).clamp(1e-9, f64::INFINITY);
 
-        // Note that we make also need to clamp the jacobian to getting extrememly high estimated resistance values.
+        // Note that we may also need to clamp the jacobian to avoid extremely high estimated resistance values.
 
+        // --- Row 0: dR_next / d[R, k, tau, M, M_c, R_0] ---
         let _dR_dR = 0.0;
-        let dR_dk = tau * dt * m_0 * (-k*dt).exp() * base.powf(-tau-1.0);
+        let dR_dM   = -tau * (-k * dt).exp() * base.powf(-tau - 1.0); // dR/dM (M is current moisture)
+        let dR_dk   =  tau * dt * m_next * base.powf(-tau - 1.0); // chain rule through M_next
         let dR_dtau = -(base.ln()) * base.powf(-tau);
-        let dR_dM_0 = -tau * (-k*dt).exp() * base.powf(-tau - 1.0);
-        let dR_dM_c = tau * base.powf(-tau - 1.0);
-        let dR_dR_0 = 1.0;
+        let dR_dM_c =  tau * base.powf(-tau - 1.0);
+        let dR_dR_offset = 1.0;
 
-        // note that the library requires the jacobian to be flatterned into a vector
-        // it uses the follow call F[i * n + k] where i is the row, n is the dimension and k is the column. 
-        // the whole thing uses a nasty for loop, we should be able to vectorize this in the future if we want to speed up the EKF.
-            vec![
-                0.0, // dR/dR
-                dR_dk, // dR/dk
-                dR_dtau, // dR/dtau
-                dR_dM_0, // dR/dM_0
-                dR_dM_c, // dR/dM_c
-                dR_dR_0, // dR/dR_0
-            
-            0.0, 1.0, 0.0, 0.0, 0.0, 0.0, // dk/dR, dk/dk, dk/dtau, dk/dM_0, dk/dM_c, dk/dR_0
-            0.0, 0.0, 1.0, 0.0, 0.0, 0.0, // dtau/dR, dtau/dk, dtau/dtau, dtau/dM_0, dtau/dM_c, dtau/dR_0
-            0.0, 0.0, 0.0, 1.0, 0.0, 0.0, // dM_0/dR, dM_0/dk, dM_0/dtau, dM_0/dM_0, dM_0/dM_c, dM_0/dR_0
-            0.0, 0.0, 0.0, 0.0, 1.0, 0.0, // dM_c/dR, dM_c/dk, dM_c/dtau, dM_c/dM_0, dM_c/dM_c, dM_c/dR_0
-            0.0, 0.0, 0.0, 0.0, 0.0, 1.0] // dR_0/dR, dR_0/dk, dR_0/dtau, dR_0/dM_0, dR_0/dM_c, dR_0/dR_0
-        
+        // --- Row 1: dM_next / d[R, k, tau, M, M_c, R_0] ---
+        // M_next = M * exp(-k*dt), so:
+        //   dM_next/dk = -dt * M * exp(-k*dt) = -dt * m_next
+        //   dM_next/dM = exp(-k*dt)
+        let dM_dk = -dt * m_next;
+        let dM_dM = (-k * dt).exp();
+
+        // note that the library requires the jacobian to be flattened into a vector
+        // it uses the following call F[i * n + k] where i is the row, n is the dimension and k is the column.
+        vec![
+            // Row 0: R_next
+            0.0, dR_dM, dR_dk, dR_dtau, dR_dM_c, dR_dR_offset,
+            // Row 1: M_next — this was the bug: was [0,0,0,1,0,0] treating M as constant
+            0.0, dM_dM, dM_dk, 0.0, 0.0, 0.0,
+            // Row 2: k (constant)
+            0.0, 0.0 , 1.0, 0.0, 0.0, 0.0,
+            // Row 3: tau (constant)
+            0.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+            // Row 4: M_c (constant)
+            0.0, 0.0, 0.0, 0.0, 1.0, 0.0,
+            // Row 5: R_0 (constant)
+            0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ]
     }
 
     fn measurement_jacobian(&self, _state: &[f64]) -> Vec<f64> {
         
-        vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0] // dR/dR, dR/dk, dR/dtau, dR/dM_0, dR/dM_c, dR/dR_0
+        vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0] // dR/dR, dR/dM, dR/dk, dR/dtau, dR/dM_c, dR/dR_offset
         
     }
 
     fn state_dim(&self) -> usize {
-        6 // R, k, tau, M_0, M_c, R_0
+        6 // R, M, k, tau, M_c, R_offset
     }
 
     fn measurement_dim(&self) -> usize {
@@ -113,33 +140,33 @@ mod tests {
     fn test_setup() {
         let system = MoistureSensorModel {
             _r: 0.0,
+            _m: 0.0,
             _k: 0.0,
             _tau: 0.0,
-            _m_0: 0.0,
             _m_c: 0.0,
-            _r_0: 0.0,
+            _r_offset: 0.0,
         };
 
         let dt = 2.0; // Time step in minutes
 
-        // state vector x = [R, k, tau, M_0, M_c, R_0]^T
-        let initial_state = vec![30000.0, 0.1, 0.81, 0.02, 1e-9, 29976.33]; // Initial state guess
+        // state vector x = [R, M, k, tau,  M_c, R_0]^T
+        let initial_state = vec![30000.0, 0.02, 0.1, 0.81, 1e-9, 29976.33]; // Initial state guess
         let initial_covariance =  vec![
                             vec![1.0e1, 0.0, 0.0, 0.0, 0.0, 0.0], // R
-                            vec![0.0, 1.0e-6, 0.0, 0.0, 0.0, 0.0], // k
-                            vec![0.0, 0.0, 1.0e-6, 0.0, 0.0, 0.0], // tau
-                            vec![0.0, 0.0, 0.0, 1.0e-10, 0.0, 0.0], // M_0
+                            vec![0.0, 1.0e-10, 0.0, 0.0, 0.0, 0.0], // M
+                            vec![0.0,  0.0, 1.0e-6, 0.0, 0.0, 0.0], // k
+                            vec![0.0, 0.0, 0.0, 1.0e-6, 0.0, 0.0], // tau
                             vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // M_c
-                            vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0] // R_0
+                            vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0] // R_offset
                         ].into_iter().flatten().collect(); // Flatten the 2D vector into a 1D vector
         
         let process_noise_covariance = vec![ // This is the Q matrix
             vec![1.0e-2, 0.0, 0.0, 0.0, 0.0, 0.0], // R
-            vec![0.0, 1.0e-8, 0.0, 0.0, 0.0, 0.0], // k
-            vec![0.0, 0.0, 1.0e-7, 0.0, 0.0, 0.0], // tau
-            vec![0.0, 0.0, 0.0, 1.0e-12, 0.0, 0.0], // M_0
+            vec![0.0, 1.0e-12, 0.0, 0.0,  0.0, 0.0], // M
+            vec![0.0, 0.0, 1.0e-8, 0.0, 0.0, 0.0], // k
+            vec![0.0, 0.0,  0.0, 1.0e-7, 0.0, 0.0], // tau
             vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0], // M_c
-            vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0] // R_0
+            vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0] // R_offset
         ].into_iter().flatten().collect(); // Flatten the 2D vector into a 1D vector
 
         let measurement_noise_covariance = vec![1.0e6]; // This is the R matrix
