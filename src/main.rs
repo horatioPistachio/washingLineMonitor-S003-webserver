@@ -299,6 +299,17 @@ async fn update_device_configuration(
     }
 }
 
+#[get("/devices/<device_id>/completion_time")]
+async fn get_device_completion_time(
+    predictor: &rocket::State<Arc<washing_predictor::WashingPredictor<washing_predictor::PostgresDeviceRepository>>>,
+    device_id: String,
+) -> Result<String, Status>  {
+    let completion_time = predictor.get_estimated_completion_time(&device_id); 
+    match completion_time {
+        Some(time) => Ok(time.to_rfc3339()),
+        None => Err(Status::NotFound),
+    }
+}
 // Telemetry data routes
 #[post("/telemetry", format = "json", data = "<message>")]
 async fn post_telemetry(
@@ -433,8 +444,9 @@ fn rocket() -> _ {
                 get_device,
                 delete_device,
                 update_device_configuration,
+                get_device_completion_time,
                 post_telemetry,
-                get_telemetry
+                get_telemetry,
             ],
         )
 }

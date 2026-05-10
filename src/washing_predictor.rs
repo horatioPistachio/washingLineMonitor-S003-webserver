@@ -236,6 +236,22 @@ impl<R: DeviceRepository> WashingPredictor<R> {
         }
     }
 
+    pub fn get_estimated_completion_time(
+        &self,
+        device_id: &str) -> Option<DateTime<Utc>> {
+            // returns the estimated completion time in UTC for the given device ID 
+        if let Some(entry) = self.predictor_cache.get(device_id) {
+            let current_state_estimate = entry.ekf.state();
+            match self.estimate_drying_time(current_state_estimate, &entry.last_received_time) {
+                Ok(completion_time) => Some(completion_time),
+                Err(e) => { eprintln!("Error estimating drying time for device {}: {}", device_id, e); None }
+            }
+        }
+        else {
+            None
+        }
+    }
+
     fn estimate_drying_time(
         &self,
         state_estimate: &[f64],
@@ -259,6 +275,8 @@ impl<R: DeviceRepository> WashingPredictor<R> {
 
         Ok(completion_time)
     }
+
+
 
     fn reset_predictor(&self, device_id: &str) -> Result<(), PredictorError> {
         let output = self.predictor_cache.remove(device_id);
