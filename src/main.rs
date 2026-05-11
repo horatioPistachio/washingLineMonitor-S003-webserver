@@ -70,7 +70,7 @@ pub async fn process_telemetry(pool: sqlx::PgPool, predictor: Arc<washing_predic
     let resistance = &payload["resistance"];
 
     let telemetry_data = washing_predictor::TelemetryData {
-        timestamp: timestamp.as_str().unwrap().parse::<chrono::DateTime<chrono::Utc>>().unwrap(),
+        timestamp: timestamp.as_str().unwrap_or(&chrono::Utc::now().to_rfc3339()).parse::<chrono::DateTime<chrono::Utc>>().unwrap(),
         resistance: resistance.as_f64().unwrap(),
     };
 
