@@ -69,6 +69,11 @@ pub async fn process_telemetry(pool: sqlx::PgPool, predictor: Arc<washing_predic
     let timestamp = &payload["timestamp"];
     let resistance = &payload["resistance"];
 
+    match (resistance.as_f64()) {
+        (Some(res)) => {}
+        _ => return, // If resistance is not a valid f64, exit early. i.e. battery voltage message.
+    }
+
     let telemetry_data = washing_predictor::TelemetryData {
         timestamp: timestamp.as_str().unwrap_or(&chrono::Utc::now().to_rfc3339()).parse::<chrono::DateTime<chrono::Utc>>().unwrap(),
         resistance: resistance.as_f64().unwrap(),

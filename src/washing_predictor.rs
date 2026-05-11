@@ -197,7 +197,7 @@ impl<R: DeviceRepository> WashingPredictor<R> {
                 entry.ekf.state()[0],
                 telemetry_data.resistance
             );
-            if (entry.ekf.state()[0] - telemetry_data.resistance).abs() > 1e5 {
+            if (entry.ekf.state()[0] - telemetry_data.resistance).abs() > 1e6 {
                 //we have a large jump in resistance, which likely indicates a new drying cycle has started. We should reset the EKF for this device.
                 drop(entry); // Drop the mutable reference to the EKF entry before modifying the cache
                 self.predictor_cache.remove(device_id); // evict the existing EKF entry from the cache
